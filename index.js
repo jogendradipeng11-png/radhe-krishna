@@ -53,16 +53,14 @@ const upload = multer({
 // ============================
 
 const allowedOrigins = [
-  "https://jogendradipeng11-png.github.io",        // GitHub Pages
-  "https://radhe-krishna-files-2026.onrender.com", // Old Render URL
-  "https://radhe-krishna-h7lq.onrender.com",       // NEW Render URL
+  "https://jogendradipeng11-png.github.io",
+  "https://radhe-krishna-files-2026.onrender.com",
+  "https://radhe-krishna-h7lq.onrender.com",
   "http://localhost:8080",
   "http://127.0.0.1:8080",
   "http://localhost:5500",
   "http://127.0.0.1:5500"
 ];
-
-
 app.use(cors({
   origin: function (origin, callback) {
 
