@@ -1,232 +1,120 @@
-require("dotenv").config();
-
 const express = require("express");
-const cors = require("cors");
 const session = require("express-session");
+const cors = require("cors");
 const multer = require("multer");
+const fs = require("fs");
 const path = require("path");
 
-const {
-  S3Client,
-  PutObjectCommand,
-  ListObjectsV2Command,
-  GetObjectCommand,
-  DeleteObjectCommand
-} = require("@aws-sdk/client-s3");
-
-const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
-const bcrypt = require("bcryptjs");
-
-// Simple in-memory user storage (replace with DB if needed)
-const fs = require("fs");
-const USERS_FILE = "./users.json";
-
-function loadUsers() {
-  if (!fs.existsSync(USERS_FILE)) {
-    fs.writeFileSync(USERS_FILE, JSON.stringify({ admin: bcrypt.hashSync("r", 10) }));
-  }
-  return JSON.parse(fs.readFileSync(USERS_FILE));
-}
-
-function saveUsers(users) {
-  fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
-}
-
-function findUser(username) {
-  const users = loadUsers();
-  if (!users[username]) return null;
-  return { username, password: users[username] };
-}
-
-async function addUser(username, password) {
-  const users = loadUsers();
-  if (users[username]) throw new Error("User already exists");
-  users[username] = await bcrypt.hash(password, 10);
-  saveUsers(users);
-  return { username };
-}
+const userDB = require("./user");
 
 const app = express();
-const PORT = process.env.PORT || 10000;
 
-// ============================
-// IDrive S3 Client
-// ============================
-const s3 = new S3Client({
-  region: "auto",
-  endpoint: process.env.IDRIVE_ENDPOINT,
-  credentials: {
-    accessKeyId: process.env.IDRIVE_ACCESS_KEY_ID,
-    secretAccessKey: process.env.IDRIVE_SECRET_ACCESS_KEY
-  },
-  forcePathStyle: true
-});
+// ===== CONFIG =====
+const PORT = process.env.PORT || 8080;
+const BASE_URL = process.env.BASE_URL || "http://localhost:" + PORT;
 
-const BUCKET = process.env.IDRIVE_BUCKET_NAME;
+// ===== FOLDERS =====
+const FILE_DIR = path.join(__dirname, "uploads");
+if (!fs.existsSync(FILE_DIR)) fs.mkdirSync(FILE_DIR);
 
-// ============================
-// Multer
-// ============================
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 25 * 1024 * 1024 }
-});
-
-// ============================
-// CORS for GitHub Pages + Render frontend
-// ============================
-const allowedOrigins = [
-  "https://jogendradipeng11-png.github.io",
-  "https://radhe-krishna-h7lq.onrender.com"
-];
+// ===== MIDDLEWARE =====
+app.use(express.json());
 
 app.use(cors({
-  origin: function(origin, callback) {
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) return callback(null, true);
-    callback(new Error("CORS Not Allowed"));
-  },
+  origin: true,
   credentials: true
 }));
 
-app.options("*", cors());
-
-// ============================
-// SESSION (cross-origin safe)
-// ============================
-app.set("trust proxy", 1); // important on Render
-
 app.use(session({
-  secret: process.env.JWT_SECRET || "rk-secret",
+  secret: "radhekrishna-secret",
   resave: false,
-  saveUninitialized: false,
-  cookie: {
-    secure: true,        // HTTPS required
-    sameSite: "none",    // allow GitHub Pages cross-origin
-    httpOnly: true,
-    maxAge: 14 * 24 * 60 * 60 * 1000
-  }
+  saveUninitialized: false
 }));
 
-app.use(express.json());
+// ===== FILE STORAGE =====
+const storage = multer.diskStorage({
+  destination: FILE_DIR,
+  filename: (req, file, cb) => {
+    cb(null, file.originalname);
+  }
+});
 
-// ============================
-// AUTH MIDDLEWARE
-// ============================
-const requireLogin = (req, res, next) => {
+const upload = multer({ storage });
+
+// ===== AUTH MIDDLEWARE =====
+function auth(req, res, next) {
   if (!req.session.user) {
-    return res.status(401).json({ success: false, error: "Login required" });
+    return res.status(401).json({ error: "Not logged in" });
   }
   next();
-};
+}
 
-// ============================
-// ROUTES
-// ============================
-app.get("/", (req, res) => {
-  res.json({ message: "Radhe Krishna Backend Running" });
-});
+// ===== ROUTES =====
 
-// REGISTER
-app.post("/register", async (req, res) => {
-  try {
-    const user = await addUser(req.body.username, req.body.password);
-    req.session.user = { username: user.username };
-    res.json({ success: true });
-  } catch (e) {
-    res.status(400).json({ success: false, error: e.message });
+// Register
+app.post("/register", (req, res) => {
+  const { username, password } = req.body;
+
+  if (!username || !password) {
+    return res.json({ success: false, error: "Missing fields" });
   }
+
+  const result = userDB.register(username, password);
+  res.json(result);
 });
 
-// LOGIN
-app.post("/login", async (req, res) => {
-  const user = findUser(req.body.username);
-  if (!user) return res.status(401).json({ success: false });
+// Login
+app.post("/login", (req, res) => {
+  const { username, password } = req.body;
 
-  const ok = await bcrypt.compare(req.body.password, user.password);
-  if (!ok) return res.status(401).json({ success: false });
+  if (userDB.login(username, password)) {
+    req.session.user = username;
+    return res.json({ success: true });
+  }
 
-  req.session.user = { username: user.username };
+  res.json({ success: false, error: "Invalid credentials" });
+});
+
+// Upload
+app.post("/upload", auth, upload.single("file"), (req, res) => {
   res.json({ success: true });
 });
 
-// LOGOUT
-app.post("/logout", (req, res) => {
-  req.session.destroy(() => res.json({ success: true }));
+// List Files
+app.get("/files", auth, (req, res) => {
+  const files = fs.readdirSync(FILE_DIR);
+  res.json(files);
 });
 
-// ============================
-// FILE ROUTES
-// ============================
+// Get File URL
+app.get("/file/:name", auth, (req, res) => {
+  const filePath = path.join(FILE_DIR, req.params.name);
 
-// UPLOAD
-app.post("/upload", requireLogin, upload.single("file"), async (req, res) => {
-  const username = req.session.user.username;
-  const key = `${username}/${Date.now()}-${req.file.originalname}`;
-
-  try {
-    await s3.send(new PutObjectCommand({
-      Bucket: BUCKET,
-      Key: key,
-      Body: req.file.buffer,
-      ContentType: req.file.mimetype
-    }));
-    res.json({ success: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, error: "Upload failed" });
+  if (!fs.existsSync(filePath)) {
+    return res.json({ success: false, error: "File not found" });
   }
+
+  res.json({
+    success: true,
+    url: BASE_URL + "/uploads/" + encodeURIComponent(req.params.name)
+  });
 });
 
-// LIST FILES
-app.get("/files", requireLogin, async (req, res) => {
-  const prefix = req.session.user.username + "/";
+// Delete File
+app.delete("/file/:name", auth, (req, res) => {
+  const filePath = path.join(FILE_DIR, req.params.name);
 
-  try {
-    const data = await s3.send(new ListObjectsV2Command({
-      Bucket: BUCKET,
-      Prefix: prefix
-    }));
-
-    const files = (data.Contents || []).map(f => path.basename(f.Key));
-    res.json(files);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json([]);
+  if (fs.existsSync(filePath)) {
+    fs.unlinkSync(filePath);
   }
+
+  res.json({ success: true });
 });
 
-// DOWNLOAD
-app.get("/file/:name", requireLogin, async (req, res) => {
-  const key = `${req.session.user.username}/${req.params.name}`;
+// Static serve uploads
+app.use("/uploads", express.static(FILE_DIR));
 
-  try {
-    const url = await getSignedUrl(
-      s3,
-      new GetObjectCommand({ Bucket: BUCKET, Key: key }),
-      { expiresIn: 3600 }
-    );
-    res.json({ url });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ url: null });
-  }
-});
-
-// DELETE
-app.delete("/file/:name", requireLogin, async (req, res) => {
-  const key = `${req.session.user.username}/${req.params.name}`;
-
-  try {
-    await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }));
-    res.json({ success: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false });
-  }
-});
-
-// START SERVER
+// ===== START =====
 app.listen(PORT, () => {
-  console.log("Server running:", PORT);
+  console.log("Server running on port", PORT);
 });
