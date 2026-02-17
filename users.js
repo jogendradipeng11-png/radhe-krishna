@@ -1,39 +1,36 @@
-const fs = require("fs");
-const path = require("path");
+// user.js
+const fs = require('fs');
+const path = require('path');
+const bcrypt = require('bcryptjs');
 
-const DB_FILE = path.join(__dirname, "users.json");
+const USERS_FILE = path.join(__dirname, 'users.json');
 
-// Create file if not exists
-if (!fs.existsSync(DB_FILE)) {
-  fs.writeFileSync(DB_FILE, JSON.stringify([]));
-}
+// Ensure users.json exists
+if (!fs.existsSync(USERS_FILE)) fs.writeFileSync(USERS_FILE, '[]', 'utf8');
 
 function readUsers() {
-  return JSON.parse(fs.readFileSync(DB_FILE));
+  const data = fs.readFileSync(USERS_FILE, 'utf8');
+  return JSON.parse(data || '[]');
 }
 
 function writeUsers(users) {
-  fs.writeFileSync(DB_FILE, JSON.stringify(users, null, 2));
+  fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2), 'utf8');
 }
 
-module.exports = {
+function addUser(username, password) {
+  const users = readUsers();
+  if (users.find(u => u.username === username)) return false;
+  const hash = bcrypt.hashSync(password, 10);
+  users.push({ username, password: hash });
+  writeUsers(users);
+  return true;
+}
 
-  register(username, password) {
-    const users = readUsers();
+function validateUser(username, password) {
+  const users = readUsers();
+  const user = users.find(u => u.username === username);
+  if (!user) return false;
+  return bcrypt.compareSync(password, user.password);
+}
 
-    if (users.find(u => u.username === username)) {
-      return { success: false, error: "User exists" };
-    }
-
-    users.push({ username, password });
-    writeUsers(users);
-
-    return { success: true };
-  },
-
-  login(username, password) {
-    const users = readUsers();
-    return users.find(u => u.username === username && u.password === password);
-  }
-
-};
+module.exports = { readUsers, writeUsers, addUser, validateUser };
